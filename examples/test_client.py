@@ -1,122 +1,70 @@
+"""Connect to a real Centrometal account and print the values received in real time.
+
+    export CENTROMETAL_USERNAME=you@example.com
+    export CENTROMETAL_PASSWORD=...
+    python examples/test_client.py                # print updates for 5 minutes
+    python examples/test_client.py --duration 60  # ... for 60 seconds
+    python examples/test_client.py --verbose      # also show the library's debug logs
+
+The credentials are read from the environment so they do not end up in the shell history.
+Nothing is sent to the boiler: the example only reads.
+"""
+
 import argparse
+import asyncio
 import logging
 import os
-import asyncio
-import json
-
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-import centrometal_web_boiler
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-loop = None
-testClient = None
+from centrometal_web_boiler import WebBoilerClient  # noqa: E402
 
-async def on_parameter_updated(device, param, create = False):
-    action = "Create" if create else "update"
-    serial = device["serial"]
-    name = param["name"]
-    value = param["value"]
-    logging.info(f"{action} {serial} {name} = {value}")
 
-async def connectivity_callback(connected: bool):
-    global loop
-    global testClient
-    if connected:
-        asyncio.ensure_future(testClient.refresh(), loop=loop)
+async def main(username: str, password: str, duration: int) -> int:
+    client = WebBoilerClient()
 
-async def test_relogin():
-    global loop
-    global testClient
-    while (True):
-        await asyncio.sleep(50)
-        await testClient.refresh()
-        await asyncio.sleep(50)
-        relogined = await testClient.relogin()
-        if not relogined:
-            logging.info("Failed to relogin")
-            return
-        await testClient.close_websocket()
-        await testClient.start_websocket(on_parameter_updated)
-        await asyncio.sleep(5)
-        break
+    async def on_update(device, parameter, created=False):
+        if not created:
+            print(f"{device['serial']}  {parameter['name']} = {parameter['value']}")
 
-async def test_off_on():
-    global loop
-    global testClient
-    for i in range(0, 5):
-        await asyncio.sleep(1)
-    print("Turning off")
-    for serial in testClient.data.keys():
-        await testClient.turn(serial, False)
-    for i in range(0, 10):
-        await asyncio.sleep(1)
-    print("Turning on")
-    for serial in testClient.data.keys():
-        await testClient.turn(serial, True)
-    for i in range(0, 10):
-        await asyncio.sleep(1)
-    sys.exit(0)
+    try:
+        if not await client.login(username, password):
+            print("Login failed: check the e-mail and password.")
+            return 1
+        if not await client.get_configuration():
+            print("No boiler found on this account.")
+            return 1
 
-async def test_circuit_off_on(circuit):
-    global loop
-    global testClient
-    for i in range(0, 5):
-        await asyncio.sleep(1)
-    print("Turning circuit off")
-    for serial in testClient.data.keys():
-        await testClient.turn_circuit(serial, circuit, False)
-    for i in range(0, 10):
-        await asyncio.sleep(1)
-    print("Turning on")
-    for serial in testClient.data.keys():
-        await testClient.turn_circuit(serial, circuit, True)
-    for i in range(0, 10):
-        await asyncio.sleep(1)
-    sys.exit(0)
+        for device in client.data.values():
+            print(
+                f"Boiler {device['serial']}: {device['product']} (type {device['type']}), "
+                f"{len(device['parameters'])} parameters"
+            )
 
-async def main(username, password):
-    global loop
-    global testClient
-    loop = asyncio.get_running_loop()
-    testClient = centrometal_web_boiler.WebBoilerClient()
-    testClient.set_connectivity_callback(connectivity_callback)
+        await client.start_websocket(on_update)
+        await client.refresh()
+        await asyncio.sleep(duration)
+        return 0
+    finally:
+        await client.close_websocket()
+        if client.http_client is not None:
+            await client.http_client.close_session()
 
-    loggedIn = await testClient.login(username, password)
-    if not loggedIn:
-        logging.error("Failed to login")
-        return
-    
-    gotConfiguration = await testClient.get_configuration()
-    if not gotConfiguration:
-        logging.error("Failed to get configuration")
-        return
 
-    await testClient.start_websocket(on_parameter_updated)
-
-    for device in testClient.data.values():
-        widget = device.get_widget_by_template("v3.timetable")
-        print(json.dumps(widget, indent=4))
-
-    # await test_relogin()
-    # await test_off_on()
-    # await test_circuit_off_on(72)
-    await asyncio.sleep(5000)
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='WebBoiler.')
-    parser.add_argument('--username', help='Username')
-    parser.add_argument('--password', help='Password')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--duration", type=int, default=300, help="seconds to listen")
+    parser.add_argument("--verbose", action="store_true", help="show debug logs")
     args = parser.parse_args()
-    if args.username == None or args.password == None:
-        parser.print_help()
-    else:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(message)s",
-            handlers=[ logging.StreamHandler()])
-        logging.captureWarnings(True)
-        
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main(args.username, args.password))
 
+    username = os.environ.get("CENTROMETAL_USERNAME")
+    password = os.environ.get("CENTROMETAL_PASSWORD")
+    if not username or not password:
+        parser.error("set CENTROMETAL_USERNAME and CENTROMETAL_PASSWORD")
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    sys.exit(asyncio.run(main(username, password, args.duration)))

@@ -1,6 +1,50 @@
 [build-system]
-requires = [
-    "setuptools>=42",
-    "wheel"
-]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-centrometal-web-boiler-androflo"
+# Single source of truth for the version: the GitHub release tag must be equal to it.
+version = "0.1.0"
+description = "Python library to interact with Centrometal boilers through the web-boiler.com cloud."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Tihomir Heidelberg" }]
+maintainers = [{ name = "AndroFlo" }]
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9",
+    "lxml>=4.9.1",
+    "stomper>=0.4.3",
+    "websockets>=13.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/AndroFlo/py-centrometal-web-boiler"
+Issues = "https://github.com/AndroFlo/py-centrometal-web-boiler/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# Module names are CamelCase for backward compatibility (the Home Assistant integration imports them).
+ignore = ["N999"]
