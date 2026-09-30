@@ -1,251 +1,208 @@
-# -*- coding: utf-8 -*-
-"""
-@author: Tihomir Heidelberg
+"""HTTPS client for the web-boiler.com website.
+
+The website has no documented API: the library reproduces what the Centrometal web application
+does. Login is a classic HTML form (CSRF token + e-mail + password); every other call is a POST
+returning JSON. Each response is kept as an attribute (installations, configuration, ...) and
+turned into devices by WebBoilerDeviceCollection.
 """
 
-import logging
-import aiohttp
 import json
-import sys
-import traceback
+import logging
+from typing import Any
+
+import aiohttp
 from lxml import html
 
 from centrometal_web_boiler.const import WEB_BOILER_WEBROOT
+from centrometal_web_boiler.exceptions import WebBoilerError
+
+_LOGGER = logging.getLogger(__name__)
 
 
-class HttpClientBase:
+class HttpClient:
+    """Logged-in session on web-boiler.com for one user account."""
 
-    headers = {"Origin": WEB_BOILER_WEBROOT, "Referer": WEB_BOILER_WEBROOT + "/"}
-    headers_json = {
-        "Origin": WEB_BOILER_WEBROOT,
-        "Referer": WEB_BOILER_WEBROOT + "/",
-        "Content-Type": "application/json;charset=UTF-8",
-    }
-
-    def __init__(self, username, password):
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, username: str, password: str, webroot: str = WEB_BOILER_WEBROOT):
+        self.logger = _LOGGER
         self.username = username
         self.password = password
-        self.parameter_list = dict()
-        self.http_session = None
-        self.http_session = aiohttp.ClientSession()
+        self.webroot = webroot
+        self.headers = {"Origin": webroot, "Referer": webroot + "/"}
+        self.headers_json = {**self.headers, "Content-Type": "application/json;charset=UTF-8"}
+        self.http_session: aiohttp.ClientSession | None = None
+        self.csrf_token: str | None = None
+        # Responses of the last calls, read by WebBoilerDeviceCollection
+        self.installations: list[dict] = []
+        self.configuration: dict = {}
+        self.widgetgrid_list: dict = {}
+        self.widgetgrid: dict = {}
+        self.installation_status_all: dict = {}
+        self.parameter_list: dict[str, dict] = {}
 
-    async def reinitialize_session(self):
+    # ------------------------------------------------------------------ session
+
+    def _session(self) -> aiohttp.ClientSession:
+        """Return the HTTP session, creating it on first use (it keeps the login cookie)."""
+        if self.http_session is None or self.http_session.closed:
+            self.http_session = aiohttp.ClientSession()
+        return self.http_session
+
+    async def reinitialize_session(self) -> None:
+        """Drop the session (and its login cookie); the next request opens a new one."""
         await self.close_session()
-        self.http_session = aiohttp.ClientSession()
 
-    async def close_session(self):
+    async def close_session(self) -> None:
         if self.http_session is not None:
             await self.http_session.close()
             self.http_session = None
 
-    async def _http_get(self, url, expected_code=200) -> html.HtmlElement:
-        full_url = WEB_BOILER_WEBROOT + url
-        self.logger.info(f"GET {full_url} ({self.username})")
-        response = await self.http_session.get(
-            full_url, headers=self.headers, ssl=False
-        )
-        if response.status != expected_code:
-            raise Exception(
-                f"HttpClientBase::__get {url} failed with http code: {response.status}"
-            )
-        responseText = await response.text()
-        return html.fromstring(responseText)
+    # ------------------------------------------------------------------ requests
 
-    async def _http_post(self, url, data=None, expected_code=200) -> html.HtmlElement:
-        full_url = WEB_BOILER_WEBROOT + url
-        self.logger.info(f"POST {full_url} -> {data} ({self.username})")
-        response = await self.http_session.post(
-            full_url, headers=self.headers, data=data, ssl=False
-        )
-        if response.status != expected_code:
-            raise Exception(
-                f"HttpClientBase::__post {url} failed with http code: {response.status}"
-            )
+    async def _request(self, method: str, url: str, *, data=None, json_response: bool) -> Any:
+        """Send a request and return the parsed body (HTML tree or JSON)."""
+        headers = self.headers_json if json_response else self.headers
+        # The body is not logged: the login form contains the password.
+        self.logger.debug("%s %s (%s)", method, url, self.username)
+        async with self._session().request(
+            method, self.webroot + url, headers=headers, data=data
+        ) as response:
+            text = await response.text()
+            if response.status != 200:
+                raise WebBoilerError(f"{method} {url} failed with HTTP code {response.status}")
         try:
-            responseText = await response.text()
-            return html.fromstring(responseText)
-        except:
-            raise Exception(
-                f"HttpClientBase::__post {url} failed to parse html content: {responseText}"
-            )
+            return json.loads(text) if json_response else html.fromstring(text)
+        except Exception as ex:
+            kind = "JSON" if json_response else "HTML"
+            raise WebBoilerError(f"{method} {url}: cannot parse the {kind} response") from ex
 
-    async def _http_post_json(self, url, data=None, expected_code=200) -> dict:
-        full_url = WEB_BOILER_WEBROOT + url
-        self.logger.info(f"POST-json {full_url} -> {data} ({self.username})")
-        response = await self.http_session.post(
-            full_url, headers=self.headers_json, data=data, ssl=False
+    async def _http_get(self, url: str) -> html.HtmlElement:
+        return await self._request("GET", url, json_response=False)
+
+    async def _http_post(self, url: str, data=None) -> html.HtmlElement:
+        return await self._request("POST", url, data=data, json_response=False)
+
+    async def _http_post_json(self, url: str, data: dict | None = None) -> Any:
+        return await self._request(
+            "POST", url, data=json.dumps(data if data is not None else {}), json_response=True
         )
-        if response.status != expected_code:
-            raise Exception(
-                f"HttpClientBase::_http_post_json {url} failed with http code: {response.status}"
-            )
-        try:
-            responseText = await response.text()
-            return json.loads(responseText)
-        except:
-            raise Exception(
-                f"HttpClientBase::_http_post_json {url} failed to parse json content: {responseText}"
-            )
 
-    async def _control_multiple(self, data):
-        response = await self._http_post_json(
-            "/api/inst/control/multiple", data=json.dumps(data)
-        )
-        self.logger.info(f"Sending control multiple {data} ({self.username})")
-        self.logger.info(f"Received response {{{json.dumps(response)}}} ({self.username})")
-        return response
-
-    async def _control(self, id, data):
-        response = await self._http_post_json(
-            "/api/inst/control/" + str(id), data=json.dumps(data)
-        )
-        self.logger.info(f"Sending control {data} ({self.username})")
-        self.logger.info(f"Received response {{{json.dumps(response)}}} ({self.username})")
-        return response
-
-    async def _control_advanced(self, id, data):
-        response = await self._http_post_json(
-            "/api/inst/control/advanced/" + str(id), data=json.dumps(data)
-        )
-        self.logger.info(f"Sending control advanced {data} ({self.username})")
-        self.logger.info(f"Received response {{{json.dumps(response)}}} ({self.username})")
-        return response
-
-
-class HttpClient(HttpClientBase):
-    async def __get_csrf_token(self) -> None:
-        self.logger.info(f"HttpClient - Fetching getCsrfToken ({self.username})")
-        html_doc = await self._http_get("/login")
-        input_element = html_doc.xpath('//input[@name="_csrf_token"]')
-        if len(input_element) != 1:
-            raise Exception("HttpClient::getCsrfToken failed - cannot find csrf token")
-        values = input_element[0].xpath("@value")
-        if len(values) != 1:
-            raise Exception(
-                "HttpClient::getCsrfToken  failed - cannot find csrf token vaue"
-            )
-        self.logger.info(f"HttpClient - csrf_token: {values[0]} ({self.username})")
-        self.csrf_token = values[0]
-
-    async def __login_check(self) -> None:
-        self.logger.info(f"HttpClient - Logging in... ({self.username})")
-        data = dict()
-        data["_csrf_token"] = self.csrf_token
-        data["_username"] = self.username
-        data["_password"] = self.password
-        data["submit"] = "Log In"
-        html_doc = await self._http_post("/login_check", data=data)
-        loading_div_element = html_doc.xpath('//div[@id="id-loading-screen-blackout"]')
-        if len(loading_div_element) != 1:
-            raise Exception("HttpClient::__loginCheck cannot find loading div element")
-        self.logger.info(f"HttpClient - Login successfull ({self.username})")
+    # ------------------------------------------------------------------ login
 
     async def login(self) -> bool:
+        """Log in with the account credentials. Returns False (and logs why) on failure."""
         try:
-            await self.__get_csrf_token()
-            await self.__login_check()
+            await self._fetch_csrf_token()
+            await self._login_check()
             return True
-        except Exception as e:
-            self.logger.error(str(e) + f" ({self.username})")
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            self.logger.error(
-                " ".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-                + f" ({self.username})"
-            )
+        except WebBoilerError as ex:
+            self.logger.error("Login failed: %s (%s)", ex, self.username)
+            return False
+        except Exception:
+            self.logger.exception("Login failed (%s)", self.username)
             return False
 
-    async def get_notifications(self) -> None:
-        html_doc = await self._http_post("/notifications/data/get")
+    async def _fetch_csrf_token(self) -> None:
+        """Read the anti-forgery token the login form must send back."""
+        page = await self._http_get("/login")
+        values = page.xpath('//input[@name="_csrf_token"]/@value')
+        if len(values) != 1:
+            raise WebBoilerError("Cannot find the CSRF token on the login page")
+        self.csrf_token = values[0]
 
-    async def get_installations(self):
-        self.installations = await self._http_post_json(
-            "/data/autocomplete/installation", data=json.dumps({})
-        )
-        self.installations = self.installations["installations"]
-        self.logger.debug(
-            "HttpClient::get_installations -> "
-            + json.dumps(self.installations, indent=4)
-            + f" ({self.username})"
-        )
+    async def _login_check(self) -> None:
+        """Post the login form. Success is detected by the loading screen of the application."""
+        form = {
+            "_csrf_token": self.csrf_token,
+            "_username": self.username,
+            "_password": self.password,
+            "submit": "Log In",
+        }
+        page = await self._http_post("/login_check", data=form)
+        if len(page.xpath('//div[@id="id-loading-screen-blackout"]')) != 1:
+            raise WebBoilerError("Login refused (wrong e-mail or password?)")
+        self.logger.info("Logged in (%s)", self.username)
+
+    # ------------------------------------------------------------------ reading data
+
+    async def get_notifications(self) -> None:
+        await self._http_post("/notifications/data/get")
+
+    async def get_installations(self) -> None:
+        """List the boilers of the account (id, serial, type, product...)."""
+        response = await self._http_post_json("/data/autocomplete/installation")
+        self.installations = response["installations"]
+        self.logger.debug("Installations: %s (%s)", self.installations, self.username)
 
     async def get_configuration(self) -> None:
-        self.configuration = await self._http_post_json(
-            "/api/configuration", data=json.dumps({})
-        )
-        self.logger.debug(
-            "HttpClient::get_configuration configuration -> "
-            + json.dumps(self.configuration, indent=4)
-            + f" ({self.username})"
-        )
+        self.configuration = await self._http_post_json("/api/configuration")
 
     async def get_widgetgrid_list(self) -> None:
-        self.widgetgrid_list = await self._http_post_json(
-            "/api/widgets-grid/list", data=json.dumps({})
-        )
+        self.widgetgrid_list = await self._http_post_json("/api/widgets-grid/list")
 
-    async def get_widgetgrid(self, id):
-        data = {"id": str(id), "inst": "null"}
+    async def get_widgetgrid(self, id) -> None:
         self.widgetgrid = await self._http_post_json(
-            "/api/widgets-grid", data=json.dumps(data)
+            "/api/widgets-grid", {"id": str(id), "inst": "null"}
         )
 
     async def get_installation_status_all(self, ids: list) -> None:
-        data = {"installations": ids}
+        """Current value of every parameter, for the given boiler ids."""
         self.installation_status_all = await self._http_post_json(
-            "/wdata/data/installation-status-all", data=json.dumps(data)
-        )
-        self.logger.debug(
-            "HttpClient::get_installation_status_all -> "
-            + json.dumps(self.installation_status_all, indent=4)
-            + f" ({self.username})"
+            "/wdata/data/installation-status-all", {"installations": ids}
         )
 
-    async def get_parameter_list(self, serial) -> None:
+    async def get_parameter_list(self, serial: str) -> None:
+        """Description of the parameters of one boiler (temperatures, circuits...)."""
         self.parameter_list[serial] = await self._http_post_json(
-            "/wdata/data/parameter-list/" + serial, data=json.dumps({})
-        )
-        self.logger.debug(
-            "HttpClient::get_parameter_list -> "
-            + json.dumps(self.parameter_list[serial], indent=4)
-            + f" ({self.username})"
+            "/wdata/data/parameter-list/" + serial
         )
 
-    async def refresh_device(self, id) -> None:
-        data = {"messages": {str(id): {"REFRESH": 0}}}
-        return await self._control_multiple(data)
+    # ------------------------------------------------------------------ commands
 
-    async def rstat_all_device(self, id) -> None:
-        data = {"messages": {str(id): {"RSTAT": "ALL"}}}
-        return await self._control_multiple(data)
+    async def _control(self, id, data: dict) -> dict:
+        """Send a command to one boiler."""
+        response = await self._http_post_json(f"/api/inst/control/{id}", data)
+        self.logger.info("Control %s -> %s (%s)", data, response, self.username)
+        return response
 
-    async def get_table_data(self, id, tableStartIndex, tableSubIndex) -> None:
+    async def _control_multiple(self, data: dict) -> dict:
+        """Send messages to one or more boilers: {"messages": {"<id>": {<name>: <value>}}}."""
+        response = await self._http_post_json("/api/inst/control/multiple", data)
+        self.logger.debug("Control multiple %s -> %s (%s)", data, response, self.username)
+        return response
+
+    async def _control_advanced(self, id, data: dict) -> dict:
+        response = await self._http_post_json(f"/api/inst/control/advanced/{id}", data)
+        self.logger.debug("Control advanced %s -> %s (%s)", data, response, self.username)
+        return response
+
+    async def refresh_device(self, id) -> dict:
+        """Ask the boiler to push all its values again (they arrive on the WebSocket)."""
+        return await self._control_multiple({"messages": {str(id): {"REFRESH": 0}}})
+
+    async def rstat_all_device(self, id) -> dict:
+        return await self._control_multiple({"messages": {str(id): {"RSTAT": "ALL"}}})
+
+    async def get_table_data(self, id, table_start_index: int, table_sub_index: int) -> dict:
         params = {
-            "PRD " + str(tableStartIndex): "VAL",
-            "PRD " + str(tableStartIndex + tableSubIndex): "ALV",
+            f"PRD {table_start_index}": "VAL",
+            f"PRD {table_start_index + table_sub_index}": "ALV",
         }
-        data = {"parameters": params}
-        return await self._control_advanced(id, data)
+        return await self._control_advanced(id, {"parameters": params})
 
-    def get_table_data_all(self, id, tableStartIndex, tableSize):
-        tasks = []
-        for i in range(1, tableSize + 1):
-            tasks.append(self.get_table_data(id, tableStartIndex, i))
-        return tasks
+    def get_table_data_all(self, id, table_start_index: int, table_size: int) -> list:
+        """Coroutines reading a whole table, to be awaited with asyncio.gather."""
+        return [self.get_table_data(id, table_start_index, i) for i in range(1, table_size + 1)]
 
-    async def turn_device_by_id(self, id, on):
-        cmd_value = 1 if on else 0
-        data = {"cmd-name": "CMD", "cmd-value": cmd_value}
-        return await self._control(id, data)
+    async def turn_device_by_id(self, id, on: bool) -> dict:
+        """Turn the boiler on or off."""
+        return await self._control(id, {"cmd-name": "CMD", "cmd-value": 1 if on else 0})
 
-    async def set_pellet_mode_by_id(self, id):
-        # Wood/pellet boilers (BioTec Plus): switch to pellets; there is no remote command back to wood
-        data = {"cmd-name": "SCCMD", "cmd-value": 1}
-        return await self._control(id, data)
+    async def set_pellet_mode_by_id(self, id) -> dict:
+        """Wood/pellet boilers (BioTec Plus): switch to pellets. No command goes back to wood."""
+        return await self._control(id, {"cmd-name": "SCCMD", "cmd-value": 1})
 
-    async def turn_device_circuit(self, id, circuit, on):
-        cmd_name = "PWR " + str(circuit)
-        cmd_value = 1 if on else 0
-        data = {cmd_name: cmd_value}
-        data = {"messages": {str(id): {cmd_name: cmd_value}}}
-        return await self._control_multiple(data)
+    async def turn_device_circuit(self, id, circuit, on: bool) -> dict:
+        """Turn one heating circuit on or off (circuit = its PWR index)."""
+        return await self._control_multiple(
+            {"messages": {str(id): {f"PWR {circuit}": 1 if on else 0}}}
+        )

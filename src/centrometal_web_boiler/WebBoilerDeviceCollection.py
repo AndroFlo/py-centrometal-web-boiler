@@ -1,39 +1,70 @@
-# -*- coding: utf-8 -*-
-"""
-@author: Tihomir Heidelberg
+"""Data model: the boilers of an account and their parameters.
+
+    WebBoilerDeviceCollection   dict  serial -> WebBoilerDevice
+    └─ WebBoilerDevice          dict  "id", "serial", "type", "product", ..., "parameters"
+       └─ WebBoilerParameter    dict  "name", "value", "timestamp"
+
+A parameter is a raw Centrometal code (B_Tak1_1, B_STATE, PVAL_12_0...). Its value is filled from
+the HTTPS snapshot at startup, then updated by the WebSocket in real time. Code interested in a
+parameter registers a callback with set_update_callback; it is awaited on every update.
 """
 
-import json
-import time
 import datetime
+import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 
-from centrometal_web_boiler.const import WEB_BOILER_STOMP_DEVICE_TOPIC, WEB_BOILER_STOMP_NOTIFICATION_TOPIC
+from centrometal_web_boiler.const import (
+    WEB_BOILER_STOMP_DEVICE_TOPIC,
+    WEB_BOILER_STOMP_NOTIFICATION_TOPIC,
+)
+from centrometal_web_boiler.exceptions import WebBoilerError
+
+_LOGGER = logging.getLogger(__name__)
+
+ParameterCallback = Callable[["WebBoilerParameter"], Awaitable[None]]
+# (device, parameter, created) -> None; created is True for the "everything changed" notification
+DeviceCallback = Callable[..., Awaitable[None]]
+
 
 class WebBoilerParameter(dict):
-    def __init__(self):
-        self.update_callbacks = dict()
+    """One value of a boiler, with the callbacks to notify when it changes."""
 
-    def set_update_callback(self, update_callback, update_key = "default"):
-        if update_callback == None:
-            if update_key in self.update_callbacks.keys():
-                del self.update_callbacks[update_key]
+    def __init__(self):
+        super().__init__()
+        self.update_callbacks: dict[str, ParameterCallback] = {}
+
+    def set_update_callback(
+        self, update_callback: ParameterCallback | None, update_key: str = "default"
+    ) -> None:
+        """Register (or with None, remove) the callback stored under update_key.
+
+        Each subscriber must use its own key, otherwise it replaces the previous one.
+        """
+        if update_callback is None:
+            self.update_callbacks.pop(update_key, None)
         else:
             self.update_callbacks[update_key] = update_callback
 
-    async def update(self, name, value, timestamp = None):
+    async def update(self, name: str, value, timestamp: int | None = None) -> None:
         self["name"] = name
         self["value"] = value
         self["timestamp"] = timestamp
         await self.notify_updated()
 
-    async def notify_updated(self):
-        for callback in self.update_callbacks.values():
+    async def notify_updated(self) -> None:
+        # Copy: a callback may unsubscribe while we iterate
+        for callback in list(self.update_callbacks.values()):
             await callback(self)
 
+
 class WebBoilerDevice(dict):
-    def __init__(self, username):
-        self.logger = logging.getLogger(__name__)
+    """One boiler: its description (keys) and its parameters (self["parameters"])."""
+
+    def __init__(self, username: str):
+        super().__init__()
+        self.logger = _LOGGER
         self.username = username
         self["parameters"] = {}
         self["temperatures"] = {}
@@ -42,168 +73,185 @@ class WebBoilerDevice(dict):
         self["circuits"] = {}
         self["widgets"] = {}
 
-    def has_parameter(self, name):
-        return name in self["parameters"].keys()
+    def has_parameter(self, name: str) -> bool:
+        return name in self["parameters"]
 
-    def create_parameter(self, name, value = "?"):
-        self["parameters"][name] = WebBoilerParameter()
-        self["parameters"][name]["name"] = name
-        self["parameters"][name]["value"] = value
-        return self["parameters"][name]
+    def create_parameter(self, name: str, value="?") -> WebBoilerParameter:
+        parameter = WebBoilerParameter()
+        parameter["name"] = name
+        parameter["value"] = value
+        self["parameters"][name] = parameter
+        return parameter
 
-    def get_parameter(self, name):
-        if not name in self["parameters"].keys():
-            self.logger.warn(f"WebBoilerDevice::get_parameter parameter {name} does not exist, creating one ({self.username})")
+    def get_parameter(self, name: str) -> WebBoilerParameter:
+        """Return the parameter, creating an empty one (value "?") if the boiler never sent it."""
+        if name not in self["parameters"]:
+            self.logger.debug(
+                "Parameter %s does not exist yet, creating it (%s)", name, self.username
+            )
             return self.create_parameter(name)
         return self["parameters"][name]
 
-    def get_or_create_parameter(self, name):
-        if not name in self["parameters"].keys():
+    def get_or_create_parameter(self, name: str) -> WebBoilerParameter:
+        if name not in self["parameters"]:
             return self.create_parameter(name)
         return self["parameters"][name]
 
-    def get_widget_by_template(self, template):
+    def get_widget_by_template(self, template: str) -> dict | None:
         for widget in self["widgets"].values():
             if widget["template"] == template:
                 return widget
         return None
 
-    async def update_parameter(self, name, value, timestamp = None) -> WebBoilerParameter:
-        if timestamp == None:
-            timestamp = int(time.time())
+    async def update_parameter(
+        self, name: str, value, timestamp: str | None = None
+    ) -> WebBoilerParameter:
+        """Set a value. timestamp is the server's UTC "YYYY-mm-dd HH:MM:SS", or None for now."""
+        if timestamp is None:
+            epoch = int(time.time())
         else:
-            date_time_obj = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-            timestamp = int(date_time_obj.replace(tzinfo=datetime.timezone.utc).timestamp())
+            parsed = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+            epoch = int(parsed.replace(tzinfo=datetime.UTC).timestamp())
         parameter = self.get_or_create_parameter(name)
-        await parameter.update(name, value, timestamp)
+        await parameter.update(name, value, epoch)
         return parameter
 
 
 class WebBoilerDeviceCollection(dict):
+    """All the boilers of an account, indexed by serial number."""
 
-    def __init__(self, username, on_update_callback = None, update_key = "default"):
-        self.logger = logging.getLogger(__name__)
+    def __init__(
+        self,
+        username: str,
+        on_update_callback: DeviceCallback | None = None,
+        update_key: str = "default",
+    ):
+        super().__init__()
+        self.logger = _LOGGER
         self.username = username
-        self.on_update_callbacks = dict()
+        self.on_update_callbacks: dict[str, DeviceCallback] = {}
         self.set_on_update_callback(on_update_callback, update_key)
 
-    def set_on_update_callback(self, on_update_callback, update_key = "default"):
-        if on_update_callback == None:
-            if update_key in self.on_update_callbacks.keys():
-                del self.on_update_callbacks[update_key]
+    def set_on_update_callback(
+        self, on_update_callback: DeviceCallback | None, update_key: str = "default"
+    ) -> None:
+        """Callback awaited as (device, parameter) on every real-time update."""
+        if on_update_callback is None:
+            self.on_update_callbacks.pop(update_key, None)
         else:
             self.on_update_callbacks[update_key] = on_update_callback
 
-    async def notify_all_updated(self):
-        for on_update_callback in self.on_update_callbacks.values():
+    async def notify_all_updated(self) -> None:
+        """Notify every parameter, e.g. when the connection state changes."""
+        for on_update_callback in list(self.on_update_callbacks.values()):
             for device in self.values():
-                parameters = device["parameters"]
-                for parameter in parameters.values():
+                for parameter in list(device["parameters"].values()):
                     await on_update_callback(device, parameter, True)
                     await parameter.notify_updated()
 
-    def get_device_by_id(self, id):
+    def get_device_by_id(self, id) -> WebBoilerDevice:
         for device in self.values():
             if str(id) == str(device["id"]):
                 return device
-        raise Exception(f"No device with id:{id}")
+        raise WebBoilerError(f"No device with id {id}")
 
-    def get_device_by_serial(self, serial):
+    def get_device_by_serial(self, serial) -> WebBoilerDevice:
         for device in self.values():
             if str(serial) == str(device["serial"]):
                 return device
-        raise Exception(f"No device with serial:{serial}")
+        raise WebBoilerError(f"No device with serial {serial}")
 
-    def parse_installations(self, installations : dict()):
-        for device in installations:
-            serial = device["label"]
-            self.logger.info(f"Creating device {serial} ({self.username})")
-            self[serial] = WebBoilerDevice(self.username)
-            self[serial]["id"] = device["value"]
-            self[serial]["serial"] = device["label"]
-            self[serial]["place"] = device["place"]
-            self[serial]["address"] = device["address"]
-            self[serial]["type"] = device["type"]
-            self[serial]["product"] = device["product"]
+    # ------------------------------------------------------------------ HTTPS snapshot
 
-    async def parse_installation_statuses(self, installation_status_all : dict()):
-        for device_id, value in installation_status_all.items():
+    def parse_installations(self, installations: list[dict]) -> None:
+        """Create one device per installation of the account."""
+        for installation in installations:
+            serial = installation["label"]
+            self.logger.info("Creating device %s (%s)", serial, self.username)
+            device = WebBoilerDevice(self.username)
+            device["id"] = installation["value"]
+            device["serial"] = serial
+            device["place"] = installation["place"]
+            device["address"] = installation["address"]
+            device["type"] = installation["type"]
+            device["product"] = installation["product"]
+            self[serial] = device
+
+    async def parse_installation_statuses(self, installation_status_all: dict) -> None:
+        """Fill the current parameter values: {"<id>": {"installation": {...}, "params": {...}}}."""
+        for device_id, groups in installation_status_all.items():
             device = self.get_device_by_id(device_id)
-            for group, data in value.items():
+            for group, data in groups.items():
                 if group == "installation":
                     device["country"] = data["country"]
                     device["countryCode"] = data["countryCode"]
                 elif group == "params":
-                    for param_id, param_data in data.items():
-                        await device.update_parameter(param_id, param_data["v"], param_data["ut"])
+                    for name, param in data.items():
+                        await device.update_parameter(name, param["v"], param["ut"])
                 else:
-                    raise Exception(f"Unknown group in installation_status_all group:{group}")
-            
-    def parse_parameter_lists(self, parameter_list):
+                    self._ignore("installation-status-all group", group)
+
+    # Groups of the parameter list, and the field used as key in the device dict
+    _PARAMETER_GROUPS = {
+        "Temperatures": ("temperatures", "dbindex"),
+        "Info": ("info", "installation_status"),
+        "Weather forecast": ("weather", "naslov"),
+        "Heating circuits": ("circuits", "naslov"),
+    }
+
+    def parse_parameter_lists(self, parameter_list: dict[str, dict]) -> None:
+        """Store the description of each boiler's parameters (temperatures, circuits...)."""
         for serial, device_data in parameter_list.items():
             device = self.get_device_by_serial(serial)
-            for data_id, data_value in device_data.items():
-                if data_id == "city":
-                    device["city"] = data_value
-                elif data_id == "parameters":
-                    for data_value_item in data_value:
-                        group = data_value_item["group"]
-                        if group == "Temperatures":
-                            for list_item in data_value_item["list"]:
-                                index = list_item["dbindex"]
-                                device["temperatures"][index] = list_item
-                        elif group == "Info":
-                            for list_item in data_value_item["list"]:
-                                index = list_item["installation_status"]
-                                device["info"][index] = list_item
-                        elif group == "Weather forecast":
-                            for list_item in data_value_item["list"]:
-                                index = list_item["naslov"]
-                                device["weather"][index] = list_item
-                        elif group == "Heating circuits":
-                            for list_item in data_value_item["list"]:
-                                index = list_item["naslov"]
-                                device["circuits"][index] = list_item
-                        else:
-                            raise Exception(f"Unknown group in parameter_list data_id:{group}")
+            for key, value in device_data.items():
+                if key == "city":
+                    device["city"] = value
+                elif key == "parameters":
+                    for group in value:
+                        if group["group"] not in self._PARAMETER_GROUPS:
+                            self._ignore("parameter-list group", group["group"])
+                            continue
+                        target, index_field = self._PARAMETER_GROUPS[group["group"]]
+                        for item in group["list"]:
+                            device[target][item[index_field]] = item
                 else:
-                    raise Exception(f"Unknown data_id in parameter_list data_id:{data_id}")
+                    self._ignore("parameter-list key", key)
 
-    def parse_grid(self, http_client):
+    def parse_grid(self, http_client) -> None:
+        """Attach the dashboard widgets of the website to their boiler."""
         http_client.grid = json.loads(http_client.widgetgrid["grid"])
-        if "widgets" in http_client.grid:
-            for widget in http_client.grid["widgets"]:
-                device = self.get_device_by_id(widget["data"]["installation"])
-                device["widgets"][widget["id"]] = widget
-        if "widgets2" in http_client.grid:
-            for widget in http_client.grid["widgets2"]:
+        for list_name in ("widgets", "widgets2"):
+            for widget in http_client.grid.get(list_name, []):
                 device = self.get_device_by_id(widget["data"]["installation"])
                 device["widgets"][widget["id"]] = widget
 
-    async def _update_device_with_real_time_data(self, device, body):
-        data = json.loads(body)
-        for param_id, value in data.items():
-            if device.has_parameter(param_id):
-                parameter = await device.update_parameter(param_id, value)
-                for on_update_callback in self.on_update_callbacks.values():
+    def _ignore(self, what: str, name) -> None:
+        # Centrometal may add data at any time: log it instead of failing the whole setup
+        self.logger.warning("Ignoring unknown %s: %s (%s)", what, name, self.username)
+
+    # ------------------------------------------------------------------ real time
+
+    async def parse_real_time_frame(self, stomp_frame: dict) -> None:
+        """Apply a STOMP MESSAGE frame received on the WebSocket."""
+        headers = stomp_frame.get("headers", {})
+        body = stomp_frame.get("body")
+        subscription = headers.get("subscription")
+        destination = headers.get("destination")
+        if body is None or subscription is None or destination is None:
+            return
+        if subscription == WEB_BOILER_STOMP_NOTIFICATION_TOPIC or not destination.startswith(
+            WEB_BOILER_STOMP_DEVICE_TOPIC
+        ):
+            self.logger.info("Notification received: %s (%s)", body, self.username)
+            return
+        # Destination: /topic/cm.inst.<type>.<serial>
+        serial = destination.rsplit(".", 1)[1]
+        await self._update_device_with_real_time_data(self.get_device_by_serial(serial), body)
+
+    async def _update_device_with_real_time_data(self, device: WebBoilerDevice, body: str):
+        for name, value in json.loads(body).items():
+            # Only parameters known from the snapshot are followed
+            if device.has_parameter(name):
+                parameter = await device.update_parameter(name, value)
+                for on_update_callback in list(self.on_update_callbacks.values()):
                     await on_update_callback(device, parameter)
-
-    async def parse_real_time_frame(self, stomp_frame):
-        if "headers" in stomp_frame and "body" in stomp_frame:
-            headers = stomp_frame["headers"]
-            body = stomp_frame["body"]
-            if "subscription" in headers and "destination" in headers:
-                subscription = headers["subscription"]
-                destination = headers["destination"]
-                if subscription.startswith("sub-"):
-                    if destination.startswith(WEB_BOILER_STOMP_DEVICE_TOPIC):
-                        dotpos = destination.rfind(".")
-                        serial = destination[dotpos+1:]
-                        device = self.get_device_by_serial(serial)
-                        await self._update_device_with_real_time_data(device, body)
-                    else:
-                        raise Exception(f"Unexpected message for destination: {destination}")
-                elif subscription == WEB_BOILER_STOMP_NOTIFICATION_TOPIC:
-                    self.logger.info(f"Notification received: {body} ({self.username})")
-                else:
-                    raise Exception(f"Unexpected message for subscription: {subscription}")
