@@ -43,7 +43,7 @@ PARAMETER_LIST = {
     "city": "Lyon",
     "parameters": [
         {"group": "Temperatures", "list": [{"dbindex": 12, "naslov": "Boiler"}]},
-        {"group": "Heating circuits", "list": [{"naslov": "Circuit 1", "pwr": 72}]},
+        {"group": "Heating circuits", "list": [{"naslov": "Circuit 1", "dbindex": 72}]},
         {"group": "Something new", "list": [{"x": 1}]},
     ],
 }
