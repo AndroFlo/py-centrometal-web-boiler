@@ -133,6 +133,14 @@ class WebBoilerClient:
         except Exception as e:
             return False
 
+    async def set_pellet_mode(self, serial):
+        device = self.data.get_device_by_serial(serial)
+        try:
+            response = await self.http_client.set_pellet_mode_by_id(device["id"])
+            return response["status"] == "success"
+        except Exception as e:
+            return False
+
     async def turn_circuit(self, serial, circuit, on):
         device = self.data.get_device_by_serial(serial)
         try:
