@@ -2,6 +2,9 @@
 
 import logging
 
+import pytest
+
+from centrometal_web_boiler import WebBoilerClient, WebBoilerError
 from tests.conftest import wait_until
 from tests.fake_server import DEVICE_ID, DEVICE_TYPE, EMAIL, PASSWORD, SERIAL
 
@@ -23,6 +26,20 @@ async def connect(client, updates=None):
 
 async def test_login_refused(client):
     assert not await client.login(EMAIL, "wrong")
+
+
+async def test_login_raises_when_the_server_is_unreachable(website, broker):
+    """A wrong password returns False; an outage raises, so callers can retry later."""
+    client = WebBoilerClient(webroot="http://127.0.0.1:1", stomp_url=broker.url)
+    with pytest.raises(OSError):
+        await client.login(EMAIL, PASSWORD)
+    await client.http_client.close_session()
+
+
+async def test_login_raises_on_a_server_error(client, website):
+    website.down = True
+    with pytest.raises(WebBoilerError):
+        await client.login(EMAIL, PASSWORD)
 
 
 async def test_password_is_never_logged(client, caplog):
@@ -113,8 +130,6 @@ async def test_close_websocket(client):
 
 
 async def test_connection_failure_is_reported(website):
-    from centrometal_web_boiler import WebBoilerClient
-
     client = WebBoilerClient(webroot=website.url, stomp_url="ws://127.0.0.1:1/ws")
     states = []
 

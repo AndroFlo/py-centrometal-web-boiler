@@ -50,7 +50,10 @@ class WebBoilerClient:
     # ------------------------------------------------------------------ connection
 
     async def login(self, username: str, password: str) -> bool:
-        """Log in to the website. Returns False if the credentials are refused."""
+        """Log in to the website.
+
+        Returns False if the credentials are refused; raises if the server cannot be reached.
+        """
         self.logger.info("Logging in (%s)", username)
         if self.http_client is not None:
             await self.http_client.close_session()
@@ -62,7 +65,10 @@ class WebBoilerClient:
         return await self.http_client.login()
 
     async def relogin(self) -> bool:
-        """Log in again with a fresh session (after an expired session or a lost connection)."""
+        """Log in again with a fresh session (after an expired session or a lost connection).
+
+        Same result as login: False for refused credentials, an exception if unreachable.
+        """
         await self.http_client.reinitialize_session()
         return await self.http_client.login()
 

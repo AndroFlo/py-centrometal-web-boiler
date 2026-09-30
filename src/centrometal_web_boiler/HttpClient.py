@@ -14,9 +14,12 @@ import aiohttp
 from lxml import html
 
 from centrometal_web_boiler.const import WEB_BOILER_WEBROOT
-from centrometal_web_boiler.exceptions import WebBoilerError
+from centrometal_web_boiler.exceptions import WebBoilerAuthError, WebBoilerError
 
 _LOGGER = logging.getLogger(__name__)
+
+# Without it a request to an unresponsive server waits for aiohttp's default of 5 minutes
+TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 class HttpClient:
@@ -44,7 +47,7 @@ class HttpClient:
     def _session(self) -> aiohttp.ClientSession:
         """Return the HTTP session, creating it on first use (it keeps the login cookie)."""
         if self.http_session is None or self.http_session.closed:
-            self.http_session = aiohttp.ClientSession()
+            self.http_session = aiohttp.ClientSession(timeout=TIMEOUT)
         return self.http_session
 
     async def reinitialize_session(self) -> None:
@@ -89,16 +92,18 @@ class HttpClient:
     # ------------------------------------------------------------------ login
 
     async def login(self) -> bool:
-        """Log in with the account credentials. Returns False (and logs why) on failure."""
+        """Log in with the account credentials.
+
+        Returns False when the e-mail / password are refused. Any other failure (server
+        unreachable, timeout, unexpected page) raises, so callers can tell a wrong password
+        from a temporary outage.
+        """
         try:
             await self._fetch_csrf_token()
             await self._login_check()
             return True
-        except WebBoilerError as ex:
+        except WebBoilerAuthError as ex:
             self.logger.error("Login failed: %s (%s)", ex, self.username)
-            return False
-        except Exception:
-            self.logger.exception("Login failed (%s)", self.username)
             return False
 
     async def _fetch_csrf_token(self) -> None:
@@ -119,7 +124,7 @@ class HttpClient:
         }
         page = await self._http_post("/login_check", data=form)
         if len(page.xpath('//div[@id="id-loading-screen-blackout"]')) != 1:
-            raise WebBoilerError("Login refused (wrong e-mail or password?)")
+            raise WebBoilerAuthError("Login refused (wrong e-mail or password?)")
         self.logger.info("Logged in (%s)", self.username)
 
     # ------------------------------------------------------------------ reading data
