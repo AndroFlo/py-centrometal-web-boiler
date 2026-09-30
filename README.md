@@ -72,8 +72,8 @@ ruff check . && ruff format .
 ## Release
 
 1. Bump `version` in `pyproject.toml` and push to `main`.
-2. Publish a GitHub release whose tag is exactly that version (e.g. `0.1.0`).
-   The *Upload Python Package* workflow checks the tag, runs the tests and publishes to PyPI
-   through Trusted Publishing (GitHub environment `pypi`, no token).
+2. Push a tag equal to that version: `git tag 0.1.0 && git push origin 0.1.0`.
+   The *Upload Python Package* workflow checks the tag, runs the tests, publishes to PyPI
+   through Trusted Publishing (GitHub environment `pypi`, no token) and creates the GitHub release.
 3. In the Home Assistant integration, update the pin `py-centrometal-web-boiler-androflo==<version>`
    in `manifest.json` and bump the integration version.

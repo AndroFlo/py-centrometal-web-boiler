@@ -58,8 +58,8 @@ Test manuel avec un vrai compte (lecture seule) :
 ## Publier
 
 1. Bumper `version` dans `pyproject.toml` (seule source de la version), commit + push sur `main`.
-2. Créer une release GitHub dont le tag est exactement cette version : le workflow
-   `python-publish.yml` vérifie le tag, lance les tests et publie sur PyPI (Trusted Publishing,
-   environnement GitHub `pypi`, pas de token).
+2. Pousser un tag égal à cette version (`git tag 0.1.0 && git push origin 0.1.0`) : le workflow
+   `python-publish.yml` vérifie le tag, lance les tests, publie sur PyPI (Trusted Publishing,
+   environnement GitHub `pypi`, pas de token) puis crée la release GitHub.
 3. Dans l'intégration : bumper le pin `py-centrometal-web-boiler-androflo==<version>` et la
    `version` de `manifest.json`.
