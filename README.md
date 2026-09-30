@@ -6,9 +6,14 @@ This is proof of concept library that aims to communicate with Centrometal Boile
 
 ## PYPI
 
-Library is available from https://pypi.org/project/py-centrometal-web-boiler/
+This fork (AndroFlo) is published as https://pypi.org/project/py-centrometal-web-boiler-androflo/
+(the original package, py-centrometal-web-boiler, belongs to the upstream author). The Python module is
+still named `centrometal_web_boiler`.
 
-Install it with: pip install py-centrometal-web-boiler
+Install it with: pip install py-centrometal-web-boiler-androflo
+
+A GitHub release (tag = version in setup.cfg / setup.py) publishes it to PyPI through Trusted Publishing
+(`.github/workflows/python-publish.yml`, environment `pypi`).
 
 ## How to use it
 

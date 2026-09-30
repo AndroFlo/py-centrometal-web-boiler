@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(
-    name="py-centrometal-web-boiler",
+    name="py-centrometal-web-boiler-androflo",
     version="0.0.59",
     description="Python library to interact with Centrometal Boiler System.",
     author="Tihomir Heidelberg",
@@ -14,7 +14,7 @@ setup(
         "centrometal_web_boiler.ws.utils",
         "centrometal_web_boiler.ws.wsprotocols",
     ],
-    url="https://github.com/9a4gl/py-centrometal-web-boiler",
+    url="https://github.com/AndroFlo/py-centrometal-web-boiler",
     install_requires=[
         "lxml>=4.9.1",
         "websockets>=10.3",
