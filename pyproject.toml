@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "py-centrometal-web-boiler-androflo"
 # Single source of truth for the version: the GitHub release tag must be equal to it.
-version = "0.1.0"
+version = "0.2.0"
 description = "Python library to interact with Centrometal boilers through the web-boiler.com cloud."
 readme = "README.md"
 license = "Apache-2.0"

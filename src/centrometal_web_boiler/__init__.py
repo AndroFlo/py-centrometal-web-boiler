@@ -6,7 +6,7 @@ Start with WebBoilerClient; see its module for a usage example.
 from importlib.metadata import PackageNotFoundError, version
 
 from .const import *  # noqa: F403 (public constants, kept for backward compatibility)
-from .exceptions import WebBoilerError
+from .exceptions import WebBoilerAuthError, WebBoilerError
 from .HttpClient import HttpClient
 from .HttpHelper import HttpHelper
 from .WebBoilerClient import WebBoilerClient
@@ -27,6 +27,7 @@ __all__ = [
     "HttpHelper",
     "WebBoilerClient",
     "WebBoilerDevice",
+    "WebBoilerAuthError",
     "WebBoilerDeviceCollection",
     "WebBoilerError",
     "WebBoilerParameter",

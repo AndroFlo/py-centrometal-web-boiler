@@ -57,6 +57,7 @@ class FakeWebsite:
     def __init__(self):
         self.commands: list[tuple[str, dict]] = []
         self.command_status = "success"
+        self.down = False  # True: every page answers 503, like during a Centrometal outage
         app = web.Application()
         app.router.add_get("/login", self.login_page)
         app.router.add_post("/login_check", self.login_check)
@@ -88,6 +89,8 @@ class FakeWebsite:
         return handler
 
     async def login_page(self, request):
+        if self.down:
+            return web.Response(status=503, text="maintenance")
         return web.Response(
             text=f'<html><input type="hidden" name="_csrf_token" value="{CSRF}" /></html>',
             content_type="text/html",

@@ -20,6 +20,9 @@ Le code, les docstrings et les commits sont en anglais.
 Flux : `login` → `get_configuration` (instantané HTTPS) → `start_websocket` (temps réel) →
 `refresh` (demande aux chaudières de tout renvoyer). Les commandes (`turn`, `turn_circuit`,
 `set_pellet_mode`) renvoient `True`/`False` et ne lèvent jamais d'exception.
+`login`/`relogin` renvoient `False` seulement si les identifiants sont refusés (`WebBoilerAuthError`
+en interne) ; une panne (serveur injoignable, timeout de 30 s, erreur HTTP) lève une exception, ce
+qui permet à l'intégration de réessayer plus tard au lieu de redemander le mot de passe.
 
 ## Compatibilité avec l'intégration — à ne pas casser
 
