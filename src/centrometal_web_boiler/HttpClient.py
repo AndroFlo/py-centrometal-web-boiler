@@ -238,6 +238,11 @@ class HttpClient(HttpClientBase):
         data = {"cmd-name": "CMD", "cmd-value": cmd_value}
         return await self._control(id, data)
 
+    async def set_pellet_mode_by_id(self, id):
+        # Wood/pellet boilers (BioTec Plus): switch to pellets; there is no remote command back to wood
+        data = {"cmd-name": "SCCMD", "cmd-value": 1}
+        return await self._control(id, data)
+
     async def turn_device_circuit(self, id, circuit, on):
         cmd_name = "PWR " + str(circuit)
         cmd_value = 1 if on else 0
