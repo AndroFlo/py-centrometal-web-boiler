@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Local assistant context, not for the public repo
+CLAUDE.md
