@@ -16,6 +16,7 @@ WEB_BOILER_STOMP_LOGIN_PASSCODE = "appuser"
 # Heart-beats announced to the broker, in milliseconds: (client sends every, client expects every)
 WEB_BOILER_STOMP_HEARTBEATS = (90000, 60000)
 
-# One topic per boiler: /topic/cm.inst.<type>.<serial>
-WEB_BOILER_STOMP_DEVICE_TOPIC = "/topic/cm.inst."
+# One destination per boiler: /exchange/stomp/cm.inst.<type>.<serial>. Since November 2026 the
+# broker refuses the former /topic/cm.inst.* subscriptions.
+WEB_BOILER_STOMP_DEVICE_TOPIC = "/exchange/stomp/cm.inst."
 WEB_BOILER_STOMP_NOTIFICATION_TOPIC = "/queue/notification"

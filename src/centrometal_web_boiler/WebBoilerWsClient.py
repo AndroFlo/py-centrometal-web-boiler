@@ -2,7 +2,8 @@
 
 STOMP is a small text protocol for message brokers. The exchange is:
 1. open the WebSocket and send CONNECT; the broker answers CONNECTED;
-2. SUBSCRIBE to one topic per boiler (/topic/cm.inst.<type>.<serial>) and to the notifications;
+2. SUBSCRIBE to one destination per boiler (/exchange/stomp/cm.inst.<type>.<serial>) and to the
+   notifications;
 3. receive MESSAGE frames whose body is JSON {"<parameter>": <value>, ...}.
 
 The broker also sends heart-beats (a lone newline). Answering a newline to every frame keeps the
@@ -115,19 +116,24 @@ class WebBoilerWsClient:
     async def _on_message(self, message: str | bytes) -> None:
         if isinstance(message, bytes):
             message = message.decode()
-        await self.send(HEARTBEAT)
         if message == HEARTBEAT:
+            await self.send(HEARTBEAT)
             return
         try:
             frame = stomper.unpack_frame(message)
+            if frame["cmd"] == "ERROR":
+                # Handled before answering: the broker closes the connection right after it
+                await self.error_callback(frame)
+                return
+            await self.send(HEARTBEAT)
             if frame["cmd"] == "CONNECTED":
                 self.logger.info("STOMP connected (%s)", self.username)
                 await self.connected_callback(frame)
-            elif frame["cmd"] == "ERROR":
-                await self.error_callback(frame)
             else:
                 self.logger.debug("Frame received: %s (%s)", frame, self.username)
                 await self.data_callback(frame)
+        except ConnectionClosed:
+            raise
         except Exception:
             # A frame we cannot handle must not stop the real-time updates
             self.logger.exception("Cannot handle the frame %r (%s)", message, self.username)

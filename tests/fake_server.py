@@ -139,7 +139,13 @@ class FakeBroker:
             if frame["cmd"] == "CONNECT":
                 await websocket.send("CONNECTED\nversion:1.2\nheart-beat:0,0\n\n\x00")
             elif frame["cmd"] == "SUBSCRIBE":
-                self.subscriptions[frame["headers"]["destination"]] = frame["headers"]["id"]
+                destination = frame["headers"]["destination"]
+                if destination.startswith("/topic/"):
+                    # Like the real broker since November 2026
+                    await websocket.send(f"ERROR\nmessage:access refused\n\n{destination}\x00")
+                    await websocket.close()
+                    return
+                self.subscriptions[destination] = frame["headers"]["id"]
 
     async def push(self, destination: str, body: dict | str):
         body = body if isinstance(body, str) else json.dumps(body)

@@ -8,7 +8,7 @@ from centrometal_web_boiler import WebBoilerClient, WebBoilerError
 from tests.conftest import wait_until
 from tests.fake_server import DEVICE_ID, DEVICE_TYPE, EMAIL, PASSWORD, SERIAL
 
-TOPIC = f"/topic/cm.inst.{DEVICE_TYPE}.{SERIAL}"
+TOPIC = f"/exchange/stomp/cm.inst.{DEVICE_TYPE}.{SERIAL}"
 
 
 async def connect(client, updates=None):
@@ -95,6 +95,14 @@ async def test_bad_frames_do_not_stop_updates(client, broker):
     await broker.push(TOPIC, {"B_STATE": "OFF"})
     await wait_until(lambda: client.data[SERIAL].get_parameter("B_STATE")["value"] == "OFF")
     assert client.is_websocket_connected()
+
+
+async def test_broker_error_is_logged(client, broker, caplog):
+    await connect(client)
+    await broker.connections[0].send("ERROR\nmessage:access refused\n\n\x00")
+    await broker.connections[0].close()
+    await wait_until(lambda: not client.is_websocket_connected())
+    assert "access refused" in caplog.text
 
 
 async def test_heartbeats_are_answered(client, broker):
